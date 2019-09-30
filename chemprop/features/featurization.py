@@ -2,6 +2,7 @@ from argparse import Namespace
 from typing import List, Tuple, Union
 
 from rdkit import Chem
+from rdkit.Chem.rdchem import ChiralType
 import torch
 
 # Atom feature sizes
@@ -19,6 +20,12 @@ ATOM_FEATURES = {
         Chem.rdchem.HybridizationType.SP3D,
         Chem.rdchem.HybridizationType.SP3D2
     ],
+}
+CHIRALTAG_PARITY = {
+    ChiralType.CHI_TETRAHEDRAL_CW: +1,
+    ChiralType.CHI_TETRAHEDRAL_CCW: -1,
+    ChiralType.CHI_UNSPECIFIED: 0,
+    ChiralType.CHI_OTHER: 0, # default
 }
 
 # Distance feature sizes
@@ -95,6 +102,15 @@ def atom_features(atom: Chem.rdchem.Atom, functional_groups: List[int] = None) -
         features += functional_groups
     return features
 
+def parity_features(atom: Chem.rdchem.Atom) -> int:
+    """
+    Returns the parity of an atom if it is a tetrahedral center.
+    +1 if CW, -1 if CCW, and 0 if undefined/unknown
+
+    :param atom: An RDKit atom.
+    """
+    return CHIRALTAG_PARITY[atom.GetChiralTag()]
+
 
 def bond_features(bond: Chem.rdchem.Bond) -> List[Union[bool, int, float]]:
     """
@@ -150,6 +166,7 @@ class MolGraph:
         self.a2b = []  # mapping from atom index to incoming bond indices
         self.b2a = []  # mapping from bond index to the index of the atom the bond is coming from
         self.b2revb = []  # mapping from bond index to the index of the reverse bond
+        self.parity_atoms = [] # mapping from atom index to CW (+1), CCW (-1) or undefined tetra (0)
 
         # Convert smiles to molecule
         mol = Chem.MolFromSmiles(smiles)
@@ -160,6 +177,7 @@ class MolGraph:
         # Get atom features
         for i, atom in enumerate(mol.GetAtoms()):
             self.f_atoms.append(atom_features(atom))
+            self.parity_atoms.append(parity_features(atom))
         self.f_atoms = [self.f_atoms[i] for i in range(self.n_atoms)]
 
         for _ in range(self.n_atoms):
@@ -226,12 +244,14 @@ class BatchMolGraph:
         # All start with zero padding so that indexing with zero padding returns zeros
         f_atoms = [[0] * self.atom_fdim]  # atom features
         f_bonds = [[0] * self.bond_fdim]  # combined atom/bond features
+        parity_atoms = [0]                # tetrahedral parity
         a2b = [[]]  # mapping from atom index to incoming bond indices
         b2a = [0]  # mapping from bond index to the index of the atom the bond is coming from
         b2revb = [0]  # mapping from bond index to the index of the reverse bond
         for mol_graph in mol_graphs:
             f_atoms.extend(mol_graph.f_atoms)
             f_bonds.extend(mol_graph.f_bonds)
+            parity_atoms.extend(mol_graph.parity_atoms)
 
             for a in range(mol_graph.n_atoms):
                 a2b.append([b + self.n_bonds for b in mol_graph.a2b[a]])
@@ -245,10 +265,11 @@ class BatchMolGraph:
             self.n_atoms += mol_graph.n_atoms
             self.n_bonds += mol_graph.n_bonds
 
-        self.max_num_bonds = max(1, max(len(in_bonds) for in_bonds in a2b)) # max with 1 to fix a crash in rare case of all single-heavy-atom mols
+        self.max_num_bonds = max(4, max(len(in_bonds) for in_bonds in a2b)) # max with 4 to make sure tetra code doesn't break
 
         self.f_atoms = torch.FloatTensor(f_atoms)
         self.f_bonds = torch.FloatTensor(f_bonds)
+        self.parity_atoms = torch.FloatTensor(parity_atoms)
         self.a2b = torch.LongTensor([a2b[a] + [0] * (self.max_num_bonds - len(a2b[a])) for a in range(self.n_atoms)])
         self.b2a = torch.LongTensor(b2a)
         self.b2revb = torch.LongTensor(b2revb)
@@ -264,7 +285,7 @@ class BatchMolGraph:
         :return: A tuple containing PyTorch tensors with the atom features, bond features, and graph structure
         and two lists indicating the scope of the atoms and bonds (i.e. which molecules they belong to).
         """
-        return self.f_atoms, self.f_bonds, self.a2b, self.b2a, self.b2revb, self.a_scope, self.b_scope
+        return self.f_atoms, self.f_bonds, self.a2b, self.b2a, self.b2revb, self.a_scope, self.b_scope, self.parity_atoms
 
     def get_b2b(self) -> torch.LongTensor:
         """
