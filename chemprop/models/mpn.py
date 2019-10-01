@@ -124,25 +124,25 @@ class MPNEncoder(nn.Module):
         nei_a_message = index_select_ND(message, a2x)  # num_atoms x max_num_bonds x hidden
         
         
+
         # Allow message aggregation to break symmetry for tetrahedral atoms w/ 4 unique neighbors
         # Calculate the custom interaction term for all atoms, regardless of tetra-ness;
         #   use parity information to zero out non-chiral atoms and correct for CW v CCW
-
         a_message_tetra = parity_atoms.unsqueeze(-1) # num_atoms x 1 for now
         nei_a_message_tetra_nbs = [nei_a_message.index_select(dim=1, index=torch.tensor(i)).squeeze() for i in range(4)]
         for i in range(4):
             for j in range(i+1,4):
                 a_message_tetra = torch.mul(a_message_tetra, (nei_a_message_tetra_nbs[i] - nei_a_message_tetra_nbs[j])) # num_atoms x hidden
-        
-        a_message = nei_a_message.sum(dim=1) # num_atoms x hidden
-        a_input = torch.cat([f_atoms, a_message], dim=1)  # num_atoms x (atom_fdim + hidden)
-        atom_hiddens = self.act_func(self.W_o(a_input))  # num_atoms x hidden
-        atom_hiddens = self.dropout_layer(atom_hiddens)  # num_atoms x hidden
-
         # Contribution solely due to asmmyetric tetrahedral centers
         a_input_tetra = torch.cat([f_atoms, a_message_tetra], dim=1)  # num_atoms x (atom_fdim + hidden)
         atom_hiddens_tetra = self.act_func(self.W_to(a_input_tetra))  # num_atoms x hidden
         atom_hiddens_tetra = self.dropout_layer(atom_hiddens_tetra)  # num_atoms x hidden
+
+        # Achiral message aggregation
+        a_message = nei_a_message.sum(dim=1) # num_atoms x hidden
+        a_input = torch.cat([f_atoms, a_message], dim=1)  # num_atoms x (atom_fdim + hidden)
+        atom_hiddens = self.act_func(self.W_o(a_input))  # num_atoms x hidden
+        atom_hiddens = self.dropout_layer(atom_hiddens)  # num_atoms x hidden
         
         atom_hiddens = atom_hiddens + atom_hiddens_tetra # num_atoms x hidden
 
