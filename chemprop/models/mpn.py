@@ -32,6 +32,7 @@ class MPNEncoder(nn.Module):
         self.features_only = args.features_only
         self.use_input_features = args.use_input_features
         self.use_tetra_aggregation = args.use_tetra_aggregation
+        self.use_tetra_messages = args.use_tetra_messages
         self.args = args
 
         if self.features_only:
@@ -60,7 +61,8 @@ class MPNEncoder(nn.Module):
 
         self.W_o = nn.Linear(self.atom_fdim + self.hidden_size, self.hidden_size)
 
-        self.W_to = nn.Linear(self.atom_fdim + self.hidden_size, self.hidden_size) # tetra output
+        if self.use_tetra_aggregation:
+            self.W_to = nn.Linear(self.atom_fdim + self.hidden_size, self.hidden_size) # tetra output
 
     def forward(self,
                 mol_graph: BatchMolGraph,
@@ -111,7 +113,7 @@ class MPNEncoder(nn.Module):
                 nei_message = torch.cat((nei_a_message, nei_f_bonds), dim=2)  # num_atoms x max_num_bonds x hidden + bond_fdim
                 message = nei_message.sum(dim=1)  # num_atoms x hidden + bond_fdim
 
-                if self.use_tetra_aggregation: # apply to how messages are aggregated, don't use separately parameterized update func
+                if self.use_tetra_messages: # apply to how messages are aggregated, don't use separately parameterized update func
                     message_tetra = parity_atoms[tetra_mask].unsqueeze(-1) # num_atoms x 1 for now
                     message_tetra_nbs = [nei_message[tetra_mask,:,:].index_select(dim=1, index=torch.tensor(i)).squeeze() for i in range(4)]
                     for i in range(4):
@@ -129,16 +131,15 @@ class MPNEncoder(nn.Module):
                 rev_message = message[b2revb]  # num_bonds x hidden
                 message = a_message[b2a] - rev_message  # num_bonds x hidden
 
-                ## CWC: I think that this aggregation does not help. Might need to figure out how to cancel out reverse message
-                # if self.use_tetra_aggregation: # apply to how messages are aggregated, don't use separately parameterized update func
-                #     message_tetra = parity_atoms[tetra_mask].unsqueeze(-1) # num_atoms x 1 for now
-                #     message_tetra_nbs = [nei_a_message[tetra_mask,:,:].index_select(dim=1, index=torch.tensor(i)).squeeze() for i in range(4)]
-                #     for i in range(4):
-                #         for j in range(i+1,4):
-                #             message_tetra = torch.mul(message_tetra, (message_tetra_nbs[i] - message_tetra_nbs[j])) # num_atoms x hidden
-                #     message_tetra_unmask = torch.zeros_like(message)
-                #     message_tetra_unmask[tetra_mask,:] = message_tetra 
-                #     message = message + message_tetra_unmask
+                if self.use_tetra_messages: # apply to how messages are aggregated, don't use separately parameterized update func
+                    message_tetra = parity_atoms[tetra_mask].unsqueeze(-1) # num_atoms x 1 for now
+                    message_tetra_nbs = [nei_a_message[tetra_mask,:,:].index_select(dim=1, index=torch.tensor(i)).squeeze() for i in range(4)]
+                    for i in range(4):
+                        for j in range(i+1,4):
+                            message_tetra = torch.mul(message_tetra, (message_tetra_nbs[i] - message_tetra_nbs[j])) # num_atoms x hidden
+                    message_tetra_unmask = torch.zeros_like(message)
+                    message_tetra_unmask[tetra_mask,:] = message_tetra 
+                    message = message + message_tetra_unmask
 
             message = self.W_h(message)
             message = self.act_func(input + message)  # num_bonds x hidden_size
@@ -158,34 +159,34 @@ class MPNEncoder(nn.Module):
         #   use parity information to zero out non-chiral atoms and correct for CW v CCW
         if self.use_tetra_aggregation:
             
-            ### (A) Not using masked
-            a_message_tetra = parity_atoms.unsqueeze(-1) # num_atoms x 1 for now
-            nei_a_message_tetra_nbs = [nei_a_message.index_select(dim=1, index=torch.tensor(i)).squeeze() for i in range(4)]
-            for i in range(4):
-                for j in range(i+1,4):
-                    a_message_tetra = torch.mul(a_message_tetra, (nei_a_message_tetra_nbs[i] - nei_a_message_tetra_nbs[j])) # num_atoms x hidden
-            # Contribution solely due to asmmyetric tetrahedral centers
-            a_input_tetra = torch.cat([f_atoms, a_message_tetra], dim=1)  # num_atoms x (atom_fdim + hidden)
-            atom_hiddens_tetra = self.act_func(self.W_to(a_input_tetra))  # num_atoms x hidden
-            atom_hiddens_tetra = self.dropout_layer(atom_hiddens_tetra)  # num_atoms x hidden
-            atom_hiddens = atom_hiddens + atom_hiddens_tetra # num_atoms x hidden
-
-           
-
-            # ### (B) Masked approach
-            # a_message_tetra = parity_atoms[tetra_mask].unsqueeze(-1) # num_atoms x 1 for now
-            # nei_a_message_tetra_nbs = [nei_a_message[tetra_mask,:,:].index_select(dim=1, index=torch.tensor(i)).squeeze() for i in range(4)]
+            # ### (A) Not using masked
+            # a_message_tetra = parity_atoms.unsqueeze(-1) # num_atoms x 1 for now
+            # nei_a_message_tetra_nbs = [nei_a_message.index_select(dim=1, index=torch.tensor(i)).squeeze() for i in range(4)]
             # for i in range(4):
             #     for j in range(i+1,4):
             #         a_message_tetra = torch.mul(a_message_tetra, (nei_a_message_tetra_nbs[i] - nei_a_message_tetra_nbs[j])) # num_atoms x hidden
             # # Contribution solely due to asmmyetric tetrahedral centers
-            # a_input_tetra = torch.cat([f_atoms[tetra_mask,:], a_message_tetra], dim=1)  # num_atoms x (atom_fdim + hidden)
+            # a_input_tetra = torch.cat([f_atoms, a_message_tetra], dim=1)  # num_atoms x (atom_fdim + hidden)
             # atom_hiddens_tetra = self.act_func(self.W_to(a_input_tetra))  # num_atoms x hidden
             # atom_hiddens_tetra = self.dropout_layer(atom_hiddens_tetra)  # num_atoms x hidden
-            # # Add to atom_hiddens
-            # atom_hiddens_tetra_unmask = torch.zeros_like(atom_hiddens)
-            # atom_hiddens_tetra_unmask[tetra_mask,:] = atom_hiddens_tetra
-            # atom_hiddens = atom_hiddens + atom_hiddens_tetra_unmask # num_atoms x hidden
+            # atom_hiddens = atom_hiddens + atom_hiddens_tetra # num_atoms x hidden
+
+           
+
+            # ### (B) Masked approach
+            a_message_tetra = parity_atoms[tetra_mask].unsqueeze(-1) # num_atoms x 1 for now
+            nei_a_message_tetra_nbs = [nei_a_message[tetra_mask,:,:].index_select(dim=1, index=torch.tensor(i)).squeeze() for i in range(4)]
+            for i in range(4):
+                for j in range(i+1,4):
+                    a_message_tetra = torch.mul(a_message_tetra, (nei_a_message_tetra_nbs[i] - nei_a_message_tetra_nbs[j])) # num_atoms x hidden
+            # Contribution solely due to asmmyetric tetrahedral centers
+            a_input_tetra = torch.cat([f_atoms[tetra_mask,:], a_message_tetra], dim=1)  # num_atoms x (atom_fdim + hidden)
+            atom_hiddens_tetra = self.act_func(self.W_to(a_input_tetra))  # num_atoms x hidden
+            atom_hiddens_tetra = self.dropout_layer(atom_hiddens_tetra)  # num_atoms x hidden
+            # Add to atom_hiddens
+            atom_hiddens_tetra_unmask = torch.zeros_like(atom_hiddens)
+            atom_hiddens_tetra_unmask[tetra_mask,:] = atom_hiddens_tetra
+            atom_hiddens = atom_hiddens + atom_hiddens_tetra_unmask # num_atoms x hidden
 
         # Readout
         mol_vecs = []
@@ -196,7 +197,7 @@ class MPNEncoder(nn.Module):
                 cur_hiddens = atom_hiddens.narrow(0, a_start, a_size)
                 mol_vec = cur_hiddens  # (num_atoms, hidden_size)
 
-                mol_vec = mol_vec.sum(dim=0) / a_size
+                mol_vec = mol_vec.sum(dim=0) / a_size # mean aggregation - TODO: change
                 mol_vecs.append(mol_vec)
 
         mol_vecs = torch.stack(mol_vecs, dim=0)  # (num_molecules, hidden_size)

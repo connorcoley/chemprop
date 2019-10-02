@@ -38,7 +38,7 @@ THREE_D_DISTANCE_BINS = list(range(0, THREE_D_DISTANCE_MAX + 1, THREE_D_DISTANCE
 
 # len(choices) + 1 to include room for uncommon values; + 2 at end for IsAromatic and mass
 ATOM_FDIM = sum(len(choices) + 1 for choices in ATOM_FEATURES.values()) + 2
-BOND_FDIM = 7 + 2 # was 14, removed GetStereo()  added 2 for cis/trans
+BOND_FDIM = 14 + 2 # was 14, removed GetStereo()  added 2 for cis/trans
 
 # Memoization
 SMILES_TO_GRAPH = {}
@@ -134,7 +134,7 @@ def bond_features(bond: Chem.rdchem.Bond) -> List[Union[bool, int, float]]:
             (bond.GetIsConjugated() if bt is not None else 0),
             (bond.IsInRing() if bt is not None else 0)
         ]
-        # fbond += onek_encoding_unk(int(bond.GetStereo()), list(range(6))) # remove global cis/trans tags
+        fbond += onek_encoding_unk(int(bond.GetStereo()), list(range(6))) # remove global cis/trans tags
         fbond += [0, 0] # special cis/trans message edge type
     return fbond
 

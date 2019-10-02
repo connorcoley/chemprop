@@ -179,6 +179,8 @@ def add_train_args(parser: ArgumentParser):
                         help='Use asymmetric embedding for chiral centers')
     parser.add_argument('--use_cistrans_messages', action='store_true', default=False,
                         help='Include cis/trans direct messages')
+    parser.add_argument('--use_tetra_messages', action='store_true', default=False,
+                        help='Include tetra messages for chiral centers')
 
 
 def update_checkpoint_args(args: Namespace):
