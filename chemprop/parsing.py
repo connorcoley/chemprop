@@ -175,6 +175,10 @@ def add_train_args(parser: ArgumentParser):
                         help='Number of layers in FFN after MPN encoding')
     parser.add_argument('--atom_messages', action='store_true', default=False,
                         help='Use messages on atoms instead of messages on bonds')
+    parser.add_argument('--use_tetra_aggregation', action='store_true', default=False,
+                        help='Use asymmetric embedding for chiral centers')
+    parser.add_argument('--use_cistrans_messages', action='store_true', default=False,
+                        help='Include cis/trans direct messages')
 
 
 def update_checkpoint_args(args: Namespace):
