@@ -3,6 +3,8 @@ from typing import List, Tuple, Union
 
 from rdkit import Chem
 from rdkit.Chem.rdchem import ChiralType
+from .bond_utils import get_cis_trans_atom_pairs
+
 import torch
 
 # Atom feature sizes
@@ -11,7 +13,7 @@ ATOM_FEATURES = {
     'atomic_num': list(range(MAX_ATOMIC_NUM)),
     'degree': [0, 1, 2, 3, 4, 5],
     'formal_charge': [-1, -2, 1, 2, 0],
-    'chiral_tag': [0, 1, 2, 3],
+    # 'chiral_tag': [0, 1, 2, 3], # no more chiral tag!
     'num_Hs': [0, 1, 2, 3, 4],
     'hybridization': [
         Chem.rdchem.HybridizationType.SP,
@@ -36,7 +38,7 @@ THREE_D_DISTANCE_BINS = list(range(0, THREE_D_DISTANCE_MAX + 1, THREE_D_DISTANCE
 
 # len(choices) + 1 to include room for uncommon values; + 2 at end for IsAromatic and mass
 ATOM_FDIM = sum(len(choices) + 1 for choices in ATOM_FEATURES.values()) + 2
-BOND_FDIM = 14
+BOND_FDIM = 7 + 2 # was 14, removed GetStereo()  added 2 for cis/trans
 
 # Memoization
 SMILES_TO_GRAPH = {}
@@ -92,9 +94,9 @@ def atom_features(atom: Chem.rdchem.Atom, functional_groups: List[int] = None) -
     """
     features = onek_encoding_unk(atom.GetAtomicNum() - 1, ATOM_FEATURES['atomic_num']) + \
            onek_encoding_unk(atom.GetTotalDegree(), ATOM_FEATURES['degree']) + \
-           onek_encoding_unk(atom.GetFormalCharge(), ATOM_FEATURES['formal_charge']) + \
-           onek_encoding_unk(int(atom.GetChiralTag()), ATOM_FEATURES['chiral_tag']) + \
-           onek_encoding_unk(int(atom.GetTotalNumHs()), ATOM_FEATURES['num_Hs']) + \
+           onek_encoding_unk(atom.GetFormalCharge(), ATOM_FEATURES['formal_charge'])
+           # onek_encoding_unk(int(atom.GetChiralTag()), ATOM_FEATURES['chiral_tag']) + \
+    features +=  onek_encoding_unk(int(atom.GetTotalNumHs()), ATOM_FEATURES['num_Hs']) + \
            onek_encoding_unk(int(atom.GetHybridization()), ATOM_FEATURES['hybridization']) + \
            [1 if atom.GetIsAromatic() else 0] + \
            [atom.GetMass() * 0.01]  # scaled to about the same range as other features
@@ -132,9 +134,20 @@ def bond_features(bond: Chem.rdchem.Bond) -> List[Union[bool, int, float]]:
             (bond.GetIsConjugated() if bt is not None else 0),
             (bond.IsInRing() if bt is not None else 0)
         ]
-        fbond += onek_encoding_unk(int(bond.GetStereo()), list(range(6)))
+        # fbond += onek_encoding_unk(int(bond.GetStereo()), list(range(6))) # remove global cis/trans tags
+        fbond += [0, 0] # special cis/trans message edge type
     return fbond
 
+def cistrans_bond_features(local_cistrans: str) -> List[Union[bool, int, float]]:
+    fbond = [0 for _ in range(BOND_FDIM)]
+
+    if local_cistrans == 'cis':
+        fbond[-2] = 1
+    elif local_cistrans == 'trans':
+        fbond[-1] = 1
+    else:
+        raise ValueError('Invalid cis/trans specified')
+    return fbond
 
 class MolGraph:
     """
@@ -193,6 +206,32 @@ class MolGraph:
 
                 f_bond = bond_features(bond)
 
+                if args.atom_messages:
+                    self.f_bonds.append(f_bond)
+                    self.f_bonds.append(f_bond)
+                else:
+                    self.f_bonds.append(self.f_atoms[a1] + f_bond)
+                    self.f_bonds.append(self.f_atoms[a2] + f_bond)
+
+                # Update index mappings
+                b1 = self.n_bonds
+                b2 = b1 + 1
+                self.a2b[a2].append(b1)  # b1 = a1 --> a2
+                self.b2a.append(a1)
+                self.a2b[a1].append(b2)  # b2 = a2 --> a1
+                self.b2a.append(a2)
+                self.b2revb.append(b2)
+                self.b2revb.append(b1)
+                self.n_bonds += 2
+
+        # Get extra cis/trans "bonds" - ensure these are added after real bonds
+        # so that  tetrahedral parity isn't messed up by a different neighbor ordering
+        if args.use_cistrans_messages:
+            for (a1, a2), tag in get_cis_trans_atom_pairs(mol).items():
+                # print('{} bond identified for {} for atoms {}, {}'.format(tag, Chem.MolToSmiles(mol,True), a1, a2))
+                fbond = cistrans_bond_features(tag)
+                
+                # Same process of adding features as above
                 if args.atom_messages:
                     self.f_bonds.append(f_bond)
                     self.f_bonds.append(f_bond)
